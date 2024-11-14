@@ -120,11 +120,13 @@ pub async fn process_block(
         anyhow::bail!("Block not ready yet")
     };
     for transaction in result.transactions {
-        if transaction.r == vec![0] || transaction.r == vec![0x22; 32] {
+        if transaction.r == vec![0]
+            || transaction.r == vec![0x22; 32]
+            || transaction.s == 0x_5ca1ab1e_u32.to_be_bytes()
+        {
             continue;
         }
-        // log::info!("Processing transaction {}", transaction.hash);
-        sqlx::query!(
+        if let Err(err) = sqlx::query!(
             "INSERT INTO signatures (r, s, v, tx_hash, chain, address) VALUES ($1, $2, $3, $4, $5, $6)",
             &transaction.r,
             &transaction.s,
@@ -134,8 +136,24 @@ pub async fn process_block(
             transaction.from
         )
         .execute(&mut *conn)
-        .await
-        .expect("Failed to insert signature");
+        .await {
+            log::error!("[{chain_name}] Failed to insert signature for tx {}: {}", transaction.hash, err);
+            if let Some(existing) = sqlx::query!(
+                "SELECT * FROM signatures WHERE r = $1 AND s = $2 AND v = $3 AND chain = $4",
+                &transaction.r,
+                &transaction.s,
+                transaction.v as i64,
+                chain_name
+            )
+            .fetch_optional(&mut *conn)
+            .await
+            .expect("Failed to fetch existing signature")
+            {
+                log::error!("[{chain_name}] Already indexed tx {}", existing.tx_hash);
+            } else {
+                log::error!("[{chain_name}] Not indexed");
+            }
+        }
     }
     Ok(())
 }
