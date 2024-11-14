@@ -119,41 +119,40 @@ pub async fn process_block(
     let Some(result) = response.result else {
         anyhow::bail!("Block not ready yet")
     };
-    for transaction in result.transactions {
-        if transaction.r == vec![0]
-            || transaction.r == vec![0x22; 32]
-            || transaction.s == 0x_5ca1ab1e_u32.to_be_bytes()
-        {
-            continue;
-        }
-        if let Err(err) = sqlx::query!(
-            "INSERT INTO signatures (r, s, v, tx_hash, chain, address) VALUES ($1, $2, $3, $4, $5, $6)",
-            &transaction.r,
-            &transaction.s,
-            transaction.v as i64,
-            transaction.hash,
-            chain_name,
-            transaction.from
-        )
-        .execute(&mut *conn)
-        .await {
-            log::error!("[{chain_name}] Failed to insert signature for tx {}: {}", transaction.hash, err);
-            if let Some(existing) = sqlx::query!(
-                "SELECT * FROM signatures WHERE r = $1 AND s = $2 AND v = $3 AND chain = $4",
-                &transaction.r,
-                &transaction.s,
-                transaction.v as i64,
-                chain_name
-            )
-            .fetch_optional(&mut *conn)
-            .await
-            .expect("Failed to fetch existing signature")
-            {
-                log::error!("[{chain_name}] Already indexed tx {}", existing.tx_hash);
-            } else {
-                log::error!("[{chain_name}] Not indexed");
+    let transactions = result
+        .transactions
+        .into_iter()
+        .filter(|tx| {
+            if tx.r == vec![0] || tx.r == vec![0x22; 32] || tx.s == 0x_5ca1ab1e_u32.to_be_bytes() {
+                return false;
             }
-        }
+            true
+        })
+        .collect::<Vec<_>>();
+    if let Err(err) = sqlx::query!(
+        "INSERT INTO signatures (r, s, v, tx_hash, chain, address)
+            SELECT r, s, v, tx_hash, $6, address
+            FROM UNNEST($1::bytea[], $2::bytea[], $3::integer[], $4::text[], $5::text[])
+            AS t(r, s, v, tx_hash, address)
+        ",
+        &transactions.iter().map(|t| t.r.clone()).collect::<Vec<_>>(),
+        &transactions.iter().map(|t| t.s.clone()).collect::<Vec<_>>(),
+        &transactions.iter().map(|t| t.v as i32).collect::<Vec<_>>(),
+        &transactions
+            .iter()
+            .map(|t| t.hash.clone())
+            .collect::<Vec<_>>(),
+        &transactions
+            .iter()
+            .map(|t| t.from.clone())
+            .collect::<Vec<_>>(),
+        chain_name,
+    )
+    .execute(&mut *conn)
+    .await
+    {
+        log::error!("[{chain_name}] Failed to insert signatures: {:?}", err);
+        log::error!("[{chain_name}] Transactions: {:?}", transactions);
     }
     Ok(())
 }
