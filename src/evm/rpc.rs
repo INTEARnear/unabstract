@@ -79,7 +79,9 @@ pub async fn process_evm_blocks(
             log::info!("Cancelled, stopping");
             break;
         }
-        log::info!("[{chain_name}] Processing block {}", block_height);
+        if block_height % 1000 == 0 {
+            log::info!("[{chain_name}] Processing block {}", block_height);
+        }
         if let Err(err) =
             process_block(&mut conn, &rpc_url, block_height, chain_name, &client).await
         {
